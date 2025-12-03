@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { google } from 'googleapis';
-import { createClient } from '@supabase/supabase-js';
-import { cookies } from 'next/headers';
+import { createClient } from '@/utils/supabase/server';
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -13,6 +12,13 @@ export async function GET(request: Request) {
   }
 
   try {
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.redirect(new URL('/login?error=not_authenticated', url.origin));
+    }
+
     const oauth2Client = new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
@@ -20,32 +26,6 @@ export async function GET(request: Request) {
     );
 
     const { tokens } = await oauth2Client.getToken(code);
-
-    const cookieStore = cookies();
-    const supabaseAccessToken = cookieStore.get('sb-access-token')?.value;
-    const supabaseRefreshToken = cookieStore.get('sb-refresh-token')?.value;
-
-    if (!supabaseAccessToken) {
-      return NextResponse.redirect(new URL('/login?error=not_authenticated', url.origin));
-    }
-
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        global: {
-          headers: {
-            Authorization: `Bearer ${supabaseAccessToken}`,
-          },
-        },
-      }
-    );
-
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.redirect(new URL('/login?error=user_not_found', url.origin));
-    }
 
     const expiryDate = tokens.expiry_date
       ? new Date(tokens.expiry_date).toISOString()
