@@ -12,6 +12,7 @@ import { supabase } from '@/lib/supabase';
 import { Database } from '@/lib/database.types';
 import { format } from 'date-fns';
 import { GoogleDriveSync } from '@/components/google-drive-sync';
+import { SyncAllSubfolders } from '@/components/sync-all-subfolders';
 
 type Event = Database['public']['Tables']['events']['Row'];
 
@@ -88,6 +89,22 @@ function AdminDashboard() {
             <LogOut className="h-4 w-4 mr-2" />
             Sign Out
           </Button>
+        </div>
+
+        <div className="mb-6">
+          <Card className="bg-zinc-900 border-zinc-800">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-white">Google Drive Sync</CardTitle>
+                  <CardDescription className="text-zinc-400">
+                    Automatically sync all subfolders from Miami 2025 as separate galleries
+                  </CardDescription>
+                </div>
+                <SyncAllSubfolders onSyncComplete={loadEvents} />
+              </div>
+            </CardHeader>
+          </Card>
         </div>
 
         {loading ? (
