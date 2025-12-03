@@ -8,7 +8,6 @@ const corsHeaders = {
 
 interface SyncRequest {
   googleDriveFolderId: string;
-  accessToken: string;
   eventId?: string;
 }
 
@@ -19,13 +18,48 @@ Deno.serve(async (req: Request) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) {
+      throw new Error('Missing authorization header');
+    }
+
+    const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } }
+    });
+
+    const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
+    if (userError || !user) {
+      throw new Error('Unauthorized');
+    }
+
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { googleDriveFolderId, accessToken, eventId }: SyncRequest = await req.json();
+    const { googleDriveFolderId, eventId }: SyncRequest = await req.json();
 
-    if (!googleDriveFolderId || !accessToken) {
-      throw new Error('Missing required parameters');
+    if (!googleDriveFolderId) {
+      throw new Error('Missing googleDriveFolderId');
+    }
+
+    const { data: tokenData, error: tokenError } = await supabase
+      .from('google_oauth_tokens')
+      .select('access_token, refresh_token, token_expiry')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (tokenError || !tokenData?.access_token) {
+      throw new Error('Google Drive not connected. Please connect your account first.');
+    }
+
+    let accessToken = tokenData.access_token;
+
+    if (tokenData.token_expiry && new Date(tokenData.token_expiry) < new Date()) {
+      if (!tokenData.refresh_token) {
+        throw new Error('Token expired and no refresh token available. Please reconnect.');
+      }
+      accessToken = await refreshAccessToken(tokenData.refresh_token, user.id, supabase);
     }
 
     const syncLogId = crypto.randomUUID();
@@ -195,4 +229,39 @@ function generateSlug(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '')
     .substring(0, 50) + '-' + Date.now().toString(36);
+}
+
+async function refreshAccessToken(refreshToken: string, userId: string, supabase: any): Promise<string> {
+  const clientId = Deno.env.get('GOOGLE_CLIENT_ID')!;
+  const clientSecret = Deno.env.get('GOOGLE_CLIENT_SECRET')!;
+
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to refresh access token');
+  }
+
+  const data = await response.json();
+  const newAccessToken = data.access_token;
+  const expiryDate = new Date(Date.now() + data.expires_in * 1000).toISOString();
+
+  await supabase
+    .from('google_oauth_tokens')
+    .update({
+      access_token: newAccessToken,
+      token_expiry: expiryDate,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId);
+
+  return newAccessToken;
 }
