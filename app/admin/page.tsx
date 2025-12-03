@@ -5,9 +5,15 @@ import { useRouter } from 'next/navigation';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { Navigation } from '@/components/navigation';
 import { Button } from '@/components/ui/button';
-import { LogOut, RefreshCw } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { LogOut, Calendar, Image, Clock, Settings } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { GOOGLE_DRIVE_API_KEY, TARGET_FOLDER_ID, type DrivePhoto } from '@/lib/google-drive-actions';
+import { supabase } from '@/lib/supabase';
+import { Database } from '@/lib/database.types';
+import { format } from 'date-fns';
+import { GoogleDriveSync } from '@/components/google-drive-sync';
+
+type Event = Database['public']['Tables']['events']['Row'];
 
 export default function AdminPage() {
   return (
@@ -20,57 +26,41 @@ export default function AdminPage() {
 function AdminDashboard() {
   const { user, signOut } = useAuth();
   const router = useRouter();
-  const [photos, setPhotos] = useState<DrivePhoto[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [photoCounts, setPhotoCounts] = useState<Record<string, { total: number; visible: number }>>({});
 
-  const loadPhotos = async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
+  async function loadEvents() {
+    setLoading(true);
 
-    try {
-      const params = new URLSearchParams({
-        key: GOOGLE_DRIVE_API_KEY,
-        q: `'${TARGET_FOLDER_ID}' in parents and mimeType contains 'image/'`,
-        fields: 'files(id,name,createdTime)',
-        orderBy: 'createdTime desc',
-        pageSize: '100'
-      });
+    const { data: eventsData } = await supabase
+      .from('events')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-      const response = await fetch(
-        `https://www.googleapis.com/drive/v3/files?${params.toString()}`
-      );
+    if (eventsData) {
+      setEvents(eventsData);
 
-      if (!response.ok) {
-        throw new Error(`Google Drive API error: ${response.status}`);
+      const counts: Record<string, { total: number; visible: number }> = {};
+      for (const event of eventsData) {
+        const { data: photos } = await supabase
+          .from('photos')
+          .select('id, is_visible')
+          .eq('event_id', event.id);
+
+        counts[event.id] = {
+          total: photos?.length || 0,
+          visible: photos?.filter(p => p.is_visible).length || 0,
+        };
       }
-
-      const data = await response.json();
-
-      const fetchedPhotos = (data.files || []).map((file: any) => ({
-        id: file.id,
-        name: file.name,
-        createdTime: file.createdTime,
-        thumbnailUrl: `https://lh3.googleusercontent.com/d/${file.id}`
-      }));
-
-      setPhotos(fetchedPhotos);
-    } catch (error) {
-      console.error('Error loading photos:', error);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      setPhotoCounts(counts);
     }
-  };
+
+    setLoading(false);
+  }
 
   useEffect(() => {
-    loadPhotos();
-
-    const interval = setInterval(() => {
-      loadPhotos(true);
-    }, 30000);
-
-    return () => clearInterval(interval);
+    loadEvents();
   }, []);
 
   async function handleSignOut() {
@@ -85,74 +75,92 @@ function AdminDashboard() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         <div className="flex justify-between items-center mb-8">
           <div>
-            <h1 className="text-4xl font-bold text-white mb-4">Live Photo Stream: Miami Events</h1>
+            <h1 className="text-4xl font-bold text-white mb-2">Event Dashboard</h1>
             {user && (
               <p className="text-zinc-400">Logged in as: {user.email}</p>
             )}
           </div>
-          <div className="flex gap-4">
-            <Button
-              onClick={() => loadPhotos(true)}
-              disabled={refreshing}
-              variant="outline"
-              className="bg-zinc-900 border-zinc-700 text-white hover:bg-zinc-800"
-            >
-              <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
-            </Button>
-            <Button
-              variant="outline"
-              className="bg-zinc-900 border-zinc-700 text-white hover:bg-zinc-800"
-              onClick={handleSignOut}
-            >
-              <LogOut className="h-4 w-4 mr-2" />
-              Sign Out
-            </Button>
-          </div>
+          <Button
+            variant="outline"
+            className="bg-zinc-900 border-zinc-700 text-white hover:bg-zinc-800"
+            onClick={handleSignOut}
+          >
+            <LogOut className="h-4 w-4 mr-2" />
+            Sign Out
+          </Button>
         </div>
 
         {loading ? (
           <div className="flex items-center justify-center py-12">
-            <div className="text-white text-xl">Loading photos...</div>
+            <div className="text-white text-xl">Loading events...</div>
           </div>
-        ) : photos.length === 0 ? (
-          <div className="text-center text-zinc-400 py-12">
-            <p className="text-xl">No photos found in the drive folder</p>
-          </div>
+        ) : events.length === 0 ? (
+          <Card className="bg-zinc-900 border-zinc-800">
+            <CardHeader>
+              <CardTitle className="text-white">No Events Yet</CardTitle>
+              <CardDescription className="text-zinc-400">
+                Use the Google Drive sync button below to create your first event.
+              </CardDescription>
+            </CardHeader>
+          </Card>
         ) : (
-          <>
-            <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4 space-y-4">
-              {photos.map((photo) => (
-                <div
-                  key={photo.id}
-                  className="break-inside-avoid relative group overflow-hidden rounded-lg bg-zinc-900 shadow-lg hover:shadow-2xl transition-all duration-300"
-                >
-                  <img
-                    src={photo.thumbnailUrl}
-                    alt={photo.name}
-                    className="w-full h-auto object-cover transition-transform duration-300 group-hover:scale-105"
-                    loading="lazy"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/0 to-black/0 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                    <div className="absolute bottom-0 left-0 right-0 p-4">
-                      <p className="text-white text-sm font-medium truncate">
-                        {photo.name}
-                      </p>
-                      <p className="text-zinc-300 text-xs">
-                        {new Date(photo.createdTime).toLocaleDateString()}
-                      </p>
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {events.map((event) => {
+              const counts = photoCounts[event.id] || { total: 0, visible: 0 };
+              return (
+                <Card key={event.id} className="bg-zinc-900 border-zinc-800 hover:border-zinc-700 transition-colors">
+                  <CardHeader>
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <CardTitle className="text-white mb-1">
+                          {event.display_name || format(new Date(event.created_at), 'MMM dd, yyyy')}
+                        </CardTitle>
+                        <CardDescription className="text-zinc-500">
+                          {event.slug}
+                        </CardDescription>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div className="flex items-center text-zinc-400">
+                        <Image className="h-4 w-4 mr-2" />
+                        <span>{counts.visible} / {counts.total} photos</span>
+                      </div>
+                      {event.last_sync_at && (
+                        <div className="flex items-center text-zinc-400">
+                          <Clock className="h-4 w-4 mr-2" />
+                          <span>Synced {format(new Date(event.last_sync_at), 'MMM dd')}</span>
+                        </div>
+                      )}
+                    </div>
 
-            <div className="mt-8 text-center">
-              <p className="text-zinc-500 text-sm">
-                Auto-refreshes every 30 seconds • {photos.length} photos
-              </p>
-            </div>
-          </>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        className="flex-1 bg-white text-black hover:bg-zinc-200"
+                        onClick={() => router.push(`/admin/event/${event.id}`)}
+                      >
+                        <Settings className="h-4 w-4 mr-1" />
+                        Manage
+                      </Button>
+                      <GoogleDriveSync
+                        eventId={event.id}
+                        googleDriveFolderId={event.google_drive_folder_id}
+                        onSyncComplete={loadEvents}
+                      />
+                    </div>
+
+                    {event.google_drive_folder_id && (
+                      <div className="text-xs text-zinc-500 font-mono truncate">
+                        Drive: {event.google_drive_folder_id}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
         )}
       </main>
     </div>

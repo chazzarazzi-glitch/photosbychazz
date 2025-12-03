@@ -19,6 +19,8 @@ interface Photo {
   event_id: string;
   image_url: string;
   is_visible: boolean;
+  source: string;
+  google_drive_file_id: string | null;
   taken_at: string;
   created_at: string;
 }
